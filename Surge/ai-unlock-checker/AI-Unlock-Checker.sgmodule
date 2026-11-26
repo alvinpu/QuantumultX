@@ -2,9 +2,9 @@
 #!desc=只测 🇺🇸USA。美国住宅与三家匿名检测通过后，可自动维护 🏠Static Residential 🇺🇸。
 #!requirement=SYSTEM = 'macOS'
 #!arguments=mode:preview
-#!arguments-desc=preview 只检测；改为 apply 后，每次运行都可写回。Mac 当地时间每周日 15:15 检测，可手动运行 AI Unlock Scan。
+#!arguments-desc=preview 只检测；改为 apply 后，每次运行都可写回。Mac 当地时间每周三、周日 15:15 检测，可手动运行 AI Unlock Scan。
 [Script]
-AI Unlock Scan = type=cron,cronexp="15 15 * * 0",timeout=600,script-path=https://raw.githubusercontent.com/alvinpu/QuantumultX/main/Surge/ai-unlock-checker/checker.js,argument={{{mode}}}
+AI Unlock Scan = type=cron,cronexp="15 15 * * 0,3",timeout=600,script-path=https://raw.githubusercontent.com/alvinpu/QuantumultX/main/Surge/ai-unlock-checker/checker.js,argument={{{mode}}}
 AI Unlock Results = type=generic,timeout=5,script-path=https://raw.githubusercontent.com/alvinpu/QuantumultX/main/Surge/ai-unlock-checker/checker.js,argument=panel
 [Panel]
 AI Unlock Results = script-name=AI Unlock Results,title=AI Unlock Checker,update-interval=60
