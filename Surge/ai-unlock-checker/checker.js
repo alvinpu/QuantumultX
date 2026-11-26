@@ -1,8 +1,8 @@
 'use strict';
 // Surge Mac. All network probes explicitly use one named policy and no cookie jar.
-const SOURCE = '🇺🇸USA';
+
 const TARGET = '🏠Static Residential 🇺🇸';
-const REPORT = 'usa-residential-report-v1';
+const REPORT = 'usa-residential-report-v2';
 const mode = typeof $argument === 'string' ? $argument : 'preview';
 
 function api(method, path, body) {
@@ -12,25 +12,26 @@ function api(method, path, body) {
   }));
 }
 
-function request(policy, url) {
+function request(policy, url, redirect = false) {
   return new Promise(resolve => {
-    $httpClient.get({url, policy, timeout: 8, 'auto-cookie': false, 'auto-redirect': false},
+    $httpClient.get({url, policy, timeout: 8, 'auto-cookie': false, 'auto-redirect': redirect},
       (error, response, body) => {
         if (error) resolve({error: String(error)});
-        else if (!response || response.status !== 200) resolve({error: 'HTTP ' + (response?.status || '?')});
-        else resolve({body});
+        else if (!response || response.status !== 200) resolve({error: 'HTTP ' + (response?.status || '?'),body,headers:response?.headers});
+        else resolve({body,headers:response.headers});
       });
   });
 }
 
 async function get(policy, url) {
-  return (await request(policy, url)).body;
+  const result = await request(policy, url);
+  return result.error ? undefined : result.body;
 }
 
 async function classify(policy) {
   const result = await request(policy, 'https://my.ippure.com/v1/info');
   const info = parseJSON(result.body);
-  if (info && info.ip && info.countryCode && typeof info.isResidential === 'boolean') return {info};
+  if (!result.error && info && info.ip && info.countryCode && typeof info.isResidential === 'boolean') return {info};
   return {error: result.error || '响应缺少有效分类'};
 }
 
@@ -38,53 +39,86 @@ function parseJSON(body) {
   try { return JSON.parse(body); } catch (_) { return null; }
 }
 
-async function inspect({name, lineHash}) {
-  const policy = lineHash || name;
-  const row = {name, status: 'unknown'};
+function americanName(name) {
+  return /🇺🇸|美国|美國|美[东西東西]线|(?:^|[^A-Za-z])(?:USA?|United[ _-]+States)(?![A-Za-z])/i.test(name.normalize('NFKC'));
+}
+
+function inventory(data) {
+  if (!Array.isArray(data.proxies) || !Array.isArray(data['external-policies'])) throw new Error('节点清单不完整');
+  const all = data.proxies.filter(name=> !['DIRECT','REJECT','REJECT-TINYGIF'].includes(name))
+    .map(name=>({name, policy:name, source:'', external:false}));
+  for (const p of data['external-policies']) {
+    if (!p.identifier || !p.name || !p.group) throw new Error('订阅节点标识缺失');
+    all.push({name:p.name, policy:p.identifier, source:p.group, external:true});
+  }
+  return all.filter(n=>americanName(n.name));
+}
+
+function pageIssue(res) {
+  if (/unsupported_country|not available in your (?:country|region)|isn.t available in your (?:country|region)|gemini isn.t currently supported/i.test(res.body || '')) return '地区限制';
+  if (/cf-mitigated/i.test(Object.keys(res.headers || {}).join(' ')) ||
+      /<title[^>]*>\s*(?:Just a moment|Attention Required|Access Denied)|<title[^>]*>[^<]*captcha/i.test(res.body || '')) return '验证页';
+  return res.error || '';
+}
+
+// Region tables adapted from oneclickvirt/UnlockTests model/model.go (4b29e75).
+const CLAUDE_REGIONS = new Set('AD AE AG AL AM AO AR AT AU AZ BA BB BD BE BF BG BH BI BJ BN BO BR BS BT BW BZ CA CG CH CI CL CM CO CR CV CY CZ DE DJ DK DM DO DZ EC EE EG ES FI FJ FM FR GA GB GD GE GH GM GN GQ GR GT GW GY HN HR HT HU ID IE IL IN IQ IS IT JM JO JP KE KG KH KI KM KN KR KW KZ LA LB LC LI LK LR LS LT LU LV MA MC MD ME MG MH MK MN MR MT MU MV MW MX MY MZ NA NE NG NL NO NP NR NZ OM PA PE PG PH PK PL PS PT PW PY QA RO RS RW SA SB SC SE SG SI SK SL SM SN SR ST SV SZ TD TG TH TJ TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VN VU WS ZA ZM ZW'.split(' '));
+const GEMINI_REGIONS = new Set('ABW AGO AIA ALA ALB AND ARE ARG ARM ASM ATA ATF ATG AUS AUT AZE BDI BEL BEN BES BFA BGD BGR BHR BHS BIH BLM BLZ BMU BOL BRA BRB BRN BTN BWA CAF CAN CCK CHE CHL CIV CMR COD COG COK COL COM CPV CRI CUW CXR CYM CYP CZE DEU DJI DMA DNK DOM DZA ECU EGY ERI ESH ESP EST ETH FIN FJI FLK FRA FRO FSM GAB GBR GEO GGY GHA GIB GIN GLP GMB GNB GNQ GRC GRD GRL GTM GUF GUM GUY HMD HND HRV HTI HUN IDN IMN IND IOT IRL IRQ ISL ISR ITA JAM JEY JOR JPN KAZ KEN KGZ KHM KIR KNA KOR KWT LAO LBN LBR LBY LCA LIE LKA LSO LTU LUX LVA MAF MAR MCO MDA MDG MDV MEX MHL MKD MLI MLT MMR MNE MNG MNP MOZ MRT MSR MTQ MUS MWI MYS MYT NAM NCL NER NFK NGA NIC NIU NLD NOR NPL NRU NZL OMN PAK PAN PCN PER PHL PLW PNG POL PRI PRT PRY PSE PYF QAT REU ROU RWA SAU SDN SEN SGP SGS SHN SJM SLB SLE SLV SMR SOM SPM SRB SSD STP SUR SVK SVN SWE SWZ SXM SYC TCA TCD TGO THA TJK TKL TKM TLS TON TTO TUN TUR TUV TWN TZA UGA UKR UMI URY USA UZB VAT VCT VEN VGB VIR VNM VUT WLF WSM YEM ZAF ZMB ZWE'.split(' '));
+
+async function probeAI(policy) {
+  const [openai, claude, trace, gemini] = await Promise.all([
+    request(policy,'https://api.openai.com/compliance/cookie_requirements'),
+    request(policy,'https://claude.ai/',true),
+    request(policy,'https://claude.ai/cdn-cgi/trace'),
+    request(policy,'https://gemini.google.com/',true)
+  ]);
+  const chat = pageIssue(openai) || (typeof parseJSON(openai.body)?.cookie_consent_required === 'boolean' ? '通过' : '响应未知');
+  const region = /^loc=([A-Z]{2})\s*$/m.exec(trace.body || '')?.[1];
+  const claudeResult = pageIssue(claude) || pageIssue(trace) ||
+    (!region ? '地区未知' : !CLAUDE_REGIONS.has(region) ? '出口地区 '+region :
+      /<title[^>]*>[^<]*Claude|<meta[^>]+content=["']Claude/i.test(claude.body || '') ? '通过' : '页面未知');
+  const gRegion = /,2,1,200,"([A-Z]{3})"/.exec(gemini.body || '')?.[1];
+  const geminiResult = pageIssue(gemini) || (gRegion ? (GEMINI_REGIONS.has(gRegion) ? '通过' : '出口地区 '+gRegion) :
+    /456(?:31641|17354),null,true/.test(gemini.body || '') ? '通过' : '页面未知');
+  return {ChatGPT:chat,Claude:claudeResult,Gemini:geminiResult};
+}
+
+async function inspectHome({name, policy, source}) {
+  const row = {name,source,home:'未确认',aiPass:false,eligible:false};
   let result = await classify(policy);
   if (!result.info) {
-    row.classificationError = result.error;
-    const alternate = await request(policy, 'https://api.ipify.org?format=json');
-    row.exitReachable = !!parseJSON(alternate.body)?.ip;
-    if (!row.exitReachable) {
-      row.exitError = alternate.error || '出口查询无有效响应';
+    const alt = await request(policy,'https://api.ipify.org?format=json');
+    if (alt.error || !parseJSON(alt.body)?.ip) {
+      row.issue = [result.error,alt.error || '备用出口未知'].join(' / ');
       return row;
     }
     result = await classify(policy);
-    if (!result.info) {
-      row.classificationError = result.error;
-      return row;
+  }
+  row.reachable = true;
+  const info = result.info;
+  if (info) {
+    row.country = info.countryCode;
+    row.residential = info.isResidential;
+    if (info.countryCode !== 'US') row.home = '非美国出口';
+    else if (!info.isResidential) row.home = 'IPPure 非住宅';
+    else {
+      const cross = parseJSON(await get(policy,'https://proxycheck.io/v2/'+encodeURIComponent(info.ip)+'?asn=1&vpn=1'));
+      const kind = cross?.status === 'ok' && cross[info.ip]?.type;
+      row.home = kind === 'Residential' ? '双源美国住宅' : kind ? '第二来源：'+kind : '第二来源未知';
     }
   }
-  const info = result.info;
-  row.country = info.countryCode;
-  row.residential = info.isResidential;
-  if (row.country !== 'US' || !row.residential) {
-    row.status = 'excluded';
-    return row;
-  }
-  // Verify the same observed IP; an ISP ASN alone is insufficient.
-  const cross = parseJSON(await get(policy, 'https://proxycheck.io/v2/' + encodeURIComponent(info.ip) + '?asn=1&vpn=1'));
-  const secondType = cross?.status === 'ok' && cross[info.ip]?.type;
-  row.secondaryType = secondType || 'unknown';
-  if (!secondType || secondType.toLowerCase() !== 'residential') {
-    row.status = secondType && secondType.toLowerCase() !== 'unknown' ? 'conflict' : 'secondUnknown';
-    return row;
-  }
-  const [openai, trace, gemini] = await Promise.all([
-    get(policy, 'https://api.openai.com/compliance/cookie_requirements'),
-    get(policy, 'https://claude.ai/cdn-cgi/trace'),
-    get(policy, 'https://gemini.google.com/')
-  ]);
-  const consent = parseJSON(openai);
-  row.chatgpt = !!consent && typeof consent.cookie_consent_required === 'boolean';
-  row.claudeUS = /^loc=US\s*$/m.test(trace || '');
-  row.geminiUS = /,2,1,200,"USA"/.test(gemini || '');
-  row.status = row.chatgpt && row.claudeUS && row.geminiUS ? 'pass' : 'unconfirmed';
   return row;
 }
 
-function replacement(content, names) {
+async function inspect(node) {
+  const [row, ai] = await Promise.all([inspectHome(node), probeAI(node.policy)]);
+  row.ai = ai;
+  row.aiPass = Object.values(row.ai).every(v=>v==='通过');
+  row.eligible = row.aiPass && row.home === '双源美国住宅';
+  return row;
+}
+
+function replacement(content, names, sources, local) {
   const lines = content.split('\n');
   const indices = lines.map((line, idx) => line.split('=')[0].trim() === TARGET ? idx : -1).filter(idx => idx >= 0);
   if (indices.length !== 1) throw new Error('目标组缺失或重复');
@@ -99,17 +133,20 @@ function replacement(content, names) {
   const literal = s => Array.from(s, c => /[a-zA-Z0-9\u0080-\u{10FFFF}]/u.test(c) ? c :
     Array.from({length:c.length}, (_,j) => '\\u' + c.charCodeAt(j).toString(16).padStart(4,'0')).join('')).join('');
   const filter = '^(?:' + names.map(literal).join('|') + ')$';
-  lines[i] = TARGET + ' = smart, include-other-group="' + SOURCE + '", policy-regex-filter=' + filter + keep.map(f=>','+f).join('');
+  if (sources.some(g=>/[,"\r\n]/.test(g) || g===TARGET)) throw new Error('来源组名称无法安全引用');
+  const includes = (sources.length ? ', include-other-group="' + sources.join(', ') + '"' : '') +
+    (local ? ', include-all-proxies=1' : '');
+  lines[i] = TARGET + ' = smart' + includes + ', policy-regex-filter=' + filter + keep.map(f=>','+f).join('');
   return lines.join('\n');
 }
 
 function summary(r) {
-  const passed = r.rows.filter(x=>x.status === 'pass').map(x=>x.name);
-  const residential = r.rows.filter(x=>x.country === 'US' && x.residential).length;
-  return [r.time, 'USA ' + r.rows.length + ' · IPPure 住宅 ' + residential + ' · 三项通过 ' + passed.length,
-    '分类分歧 ' + r.rows.filter(x=>x.status === 'conflict').length + ' · 第二来源未确认 ' + r.rows.filter(x=>x.status === 'secondUnknown').length,
-    '两处查询均失败 ' + r.rows.filter(x=>x.status === 'unknown' && x.exitReachable === false).length,
-    '出口可达但分类未知 ' + r.rows.filter(x=>x.status === 'unknown' && x.exitReachable === true).length, ...passed, r.note].join('\n');
+  const ai = r.rows.filter(x=>x.aiPass);
+  const eligible = r.rows.filter(x=>x.eligible);
+  const list = entries => entries.map(x=>x.name+' ['+(x.source || '本地')+']').join('\n') || '无';
+  return [r.time,'名称匹配 '+r.rows.length+' · 出口可达 '+r.rows.filter(x=>x.reachable).length,
+    '三家匿名通过 '+ai.length,list(ai),'双源美国住宅 '+r.rows.filter(x=>x.home==='双源美国住宅').length,list(r.rows.filter(x=>x.home==='双源美国住宅')),
+    'Static Residential 候选 '+eligible.length,list(eligible),r.note].join('\n');
 }
 
 async function run() {
@@ -120,10 +157,8 @@ async function run() {
   const sectionName = 'Proxy Group';
   const readSection = () => api('GET','/v1/profiles/section',{name:sectionName});
   const section = await readSection();
-  const groups = await api('GET','/v1/policy_groups',{});
-  if (!Array.isArray(groups[SOURCE]) || !groups[TARGET]) throw new Error('未找到来源组或目标组');
-  const nodes = groups[SOURCE].filter(p=>p.enabled !== false && p.isGroup === false);
-  if (new Set(nodes.map(p=>p.name)).size !== nodes.length) throw new Error('来源组有重名节点，无法按名称安全写回');
+  const data = await api('GET','/v1/policies',{include_external:true});
+  const nodes = inventory(data);
   if (!nodes.length) throw new Error('来源组没有可检测节点');
   const rows = Array(nodes.length);
   let cursor = 0;
@@ -134,13 +169,17 @@ async function run() {
     }
   }
   await Promise.all(Array.from({length:Math.min(4,nodes.length)},worker));
-  const passed = rows.filter(x=>x.status==='pass').map(x=>x.name);
+  const qualified = rows.filter(x=>x.eligible);
+  const passed = [...new Set(qualified.map(x=>x.name))];
   const report = {time:new Date().toISOString(),rows,note:'仅检测'};
   if (mode === 'apply') {
     if (!passed.length) report.note = '本轮零通过，保留原组';
     else {
       if (!section.editable || !section.revision) throw new Error('目标配置不可编辑');
-      const content = replacement(section.content,passed);
+      const sources = [...new Set(qualified.map(x=>x.source).filter(Boolean))];
+      const local = qualified.some(x=>!x.source);
+      if (rows.some(x=>!x.eligible && passed.includes(x.name) && (x.source ? sources.includes(x.source) : local))) throw new Error('同名节点结果冲突，保留原组');
+      const content = replacement(section.content,passed,sources,local);
       if (content !== section.content) {
         await api('POST','/v1/profiles/section',{name:sectionName,revision:section.revision,content});
         if ((await readSection()).content !== content) throw new Error('写后读回不一致');
