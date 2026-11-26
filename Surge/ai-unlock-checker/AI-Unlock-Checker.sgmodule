@@ -1,5 +1,5 @@
 #!name=AI Unlock Checker
-#!desc=只测 🇺🇸USA。美国住宅与三家匿名检测通过后，可自动维护 🏠Static Residential 🇺🇸。
+#!desc=从所有节点按名称筛选美国线路。分别显示三家 AI 匿名结果和双源美国住宅，可自动维护 🏠Static Residential 🇺🇸。
 #!requirement=SYSTEM = 'macOS'
 #!arguments=mode:preview
 #!arguments-desc=preview 只检测；改为 apply 后，每次运行都可写回。Mac 当地时间每周三、周日 06:30 检测，可手动运行 AI Unlock Scan。
