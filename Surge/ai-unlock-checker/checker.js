@@ -12,11 +12,26 @@ function api(method, path, body) {
   }));
 }
 
-function get(policy, url) {
+function request(policy, url) {
   return new Promise(resolve => {
     $httpClient.get({url, policy, timeout: 8, 'auto-cookie': false, 'auto-redirect': false},
-      (error, response, body) => resolve(!error && response && response.status === 200 ? body : null));
+      (error, response, body) => {
+        if (error) resolve({error: String(error)});
+        else if (!response || response.status !== 200) resolve({error: 'HTTP ' + (response?.status || '?')});
+        else resolve({body});
+      });
   });
+}
+
+async function get(policy, url) {
+  return (await request(policy, url)).body;
+}
+
+async function classify(policy) {
+  const result = await request(policy, 'https://my.ippure.com/v1/info');
+  const info = parseJSON(result.body);
+  if (info && info.ip && info.countryCode && typeof info.isResidential === 'boolean') return {info};
+  return {error: result.error || '响应缺少有效分类'};
 }
 
 function parseJSON(body) {
@@ -26,12 +41,34 @@ function parseJSON(body) {
 async function inspect({name, lineHash}) {
   const policy = lineHash || name;
   const row = {name, status: 'unknown'};
-  const info = parseJSON(await get(policy, 'https://my.ippure.com/v1/info'));
-  if (!info || !info.ip || !info.countryCode || typeof info.isResidential !== 'boolean') return row;
+  let result = await classify(policy);
+  if (!result.info) {
+    row.classificationError = result.error;
+    const alternate = await request(policy, 'https://api.ipify.org?format=json');
+    row.exitReachable = !!parseJSON(alternate.body)?.ip;
+    if (!row.exitReachable) {
+      row.exitError = alternate.error || '出口查询无有效响应';
+      return row;
+    }
+    result = await classify(policy);
+    if (!result.info) {
+      row.classificationError = result.error;
+      return row;
+    }
+  }
+  const info = result.info;
   row.country = info.countryCode;
   row.residential = info.isResidential;
   if (row.country !== 'US' || !row.residential) {
     row.status = 'excluded';
+    return row;
+  }
+  // Verify the same observed IP; an ISP ASN alone is insufficient.
+  const cross = parseJSON(await get(policy, 'https://proxycheck.io/v2/' + encodeURIComponent(info.ip) + '?asn=1&vpn=1'));
+  const secondType = cross?.status === 'ok' && cross[info.ip]?.type;
+  row.secondaryType = secondType || 'unknown';
+  if (!secondType || secondType.toLowerCase() !== 'residential') {
+    row.status = secondType && secondType.toLowerCase() !== 'unknown' ? 'conflict' : 'secondUnknown';
     return row;
   }
   const [openai, trace, gemini] = await Promise.all([
@@ -69,8 +106,10 @@ function replacement(content, names) {
 function summary(r) {
   const passed = r.rows.filter(x=>x.status === 'pass').map(x=>x.name);
   const residential = r.rows.filter(x=>x.country === 'US' && x.residential).length;
-  return [r.time, 'USA ' + r.rows.length + ' · 美国住宅 ' + residential + ' · 三项通过 ' + passed.length,
-    '住宅属性未知 ' + r.rows.filter(x=>x.status === 'unknown').length, ...passed, r.note].join('\n');
+  return [r.time, 'USA ' + r.rows.length + ' · IPPure 住宅 ' + residential + ' · 三项通过 ' + passed.length,
+    '分类分歧 ' + r.rows.filter(x=>x.status === 'conflict').length + ' · 第二来源未确认 ' + r.rows.filter(x=>x.status === 'secondUnknown').length,
+    '两处查询均失败 ' + r.rows.filter(x=>x.status === 'unknown' && x.exitReachable === false).length,
+    '出口可达但分类未知 ' + r.rows.filter(x=>x.status === 'unknown' && x.exitReachable === true).length, ...passed, r.note].join('\n');
 }
 
 async function run() {
